@@ -14,6 +14,7 @@ def main():
 
     # Load data
     input_data.X, input_data.Y, input_data.numtypes = load_iris_data(PATH)
+    input_data.X = input_data.X / 10
     input_data.combinations = generate_combinations(input_data.numtypes)
 
     # Split data into training and testing sets

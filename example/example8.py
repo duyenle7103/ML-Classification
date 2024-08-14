@@ -1,80 +1,74 @@
 import numpy as np
-from sklearn.model_selection import KFold
-from sklearn.metrics import accuracy_score
-from scipy.stats import multivariate_normal
 from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from numpy.linalg import inv
 from data_loader import load_iris_data
 
-X_train, y_train, numtypes = load_iris_data("input/train.txt")
-X_test, y_test, num = load_iris_data("input/test.txt")
+# Tải dữ liệu IRIS
+X_train, y_train, class_labels = load_iris_data("input/train.txt")
+X_test, y_test, _ = load_iris_data("input/test.txt")
 
-# Split the dataset into training and testing sets
-print(X_train)
-print(X_train.shape)
-print(y_train)
-print(y_train.shape)
-print(X_test)
-print(X_test.shape)
-print(y_test)
-print(y_test.shape)
+# Bước 2: Tính các vector trung bình cho từng lớp trên tập huấn luyện
+mean_vectors = []
+for cl in range(class_labels):
+    mean_vectors.append(np.mean(X_train[y_train == cl], axis=0))
 
-# Standardize the features
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+# Bước 3: Tính ma trận scatter trong lớp (within-class scatter matrix)
+S_W = np.zeros((4,4))
+for cl, mv in zip(range(class_labels), mean_vectors):
+    class_sc_mat = np.zeros((4,4))  # Ma trận scatter cho mỗi lớp
+    for row in X_train[y_train == cl]:
+        row, mv = row.reshape(4,1), mv.reshape(4,1)  # Chuyển thành vector cột
+        class_sc_mat += (row-mv).dot((row-mv).T)
+    S_W += class_sc_mat
 
-print(X_train)
-print(X_test)
+# Bước 4: Tính ma trận scatter giữa các lớp (between-class scatter matrix)
+overall_mean = np.mean(X_train, axis=0)
+S_B = np.zeros((4,4))
+for i, mean_vec in enumerate(mean_vectors):
+    n = X_train[y_train == i, :].shape[0]
+    mean_vec = mean_vec.reshape(4,1)
+    overall_mean = overall_mean.reshape(4,1)
+    S_B += n * (mean_vec - overall_mean).dot((mean_vec - overall_mean).T)
 
-# Initialize the number of classes
-num_classes = len(np.unique(y_train))
+# Bước 5: Tính tiêu chuẩn Fisher (Fisher’s criterion) và tìm ma trận chiếu tối ưu W
+eig_vals, eig_vecs = np.linalg.eig(np.linalg.inv(S_W).dot(S_B))
 
-kf = KFold(n_splits=5, shuffle=True, random_state=42)
-accuracies = []
+# Tạo danh sách các cặp (giá trị riêng, vector riêng)
+eig_pairs = [(np.abs(eig_vals[i]), eig_vecs[:,i]) for i in range(len(eig_vals))]
 
-for train_index, test_index in kf.split(X_train):
-    X_fold_train, X_fold_test = X_train[train_index], X_train[test_index]
-    y_fold_train, y_fold_test = y_train[train_index], y_train[test_index]
+# Sắp xếp các cặp theo thứ tự giảm dần của giá trị riêng
+eig_pairs = sorted(eig_pairs, key=lambda k: k[0], reverse=True)
 
-    # Calculate mean and shared covariance matrix
-    mu = np.array([np.mean(X_fold_train[y_fold_train == label], axis=0) for label in range(num_classes)])
-    Sigma = np.mean([np.cov(X_fold_train[y_fold_train == label], rowvar=False) for label in range(num_classes)], axis=0)
+# Chọn hai vector riêng tương ứng với hai giá trị riêng lớn nhất
+W = np.hstack((eig_pairs[0][1].reshape(4,1), eig_pairs[1][1].reshape(4,1))).real
 
-    # Calculate inverse of shared covariance matrix
-    Sigma_inv = np.linalg.inv(Sigma)
+# Bước 6: Biến đổi dữ liệu sử dụng ma trận chiếu W
+X_train_fisher = X_train.dot(W)
+X_test_fisher = X_test.dot(W)
 
-    # Calculate priors
-    priors = [np.mean(y_fold_train == label) for label in range(num_classes)]
+# Bước 7: Tính các hàm phân biệt của Fisher sử dụng phương trình 4.17
+# Mở rộng ma trận dữ liệu X_train với thành phần bias
+X_train_augmented = np.hstack((np.ones((X_train.shape[0], 1)), X_train_fisher))  # Thêm thành phần bias
+T_train = np.zeros((X_train.shape[0], class_labels))
+for i in range(X_train.shape[0]):
+    T_train[i, y_train[i]] = 1
 
-    # Calculate wk and wk0 for each class k
-    wk_list = []
-    wk0_list = []
-    for k in range(num_classes):
-        wk = np.dot(Sigma_inv, mu[k])
-        wk0 = -0.5 * np.dot(np.dot(mu[k].T, Sigma_inv), mu[k]) + np.log(priors[k])
-        wk_list.append(wk)
-        wk0_list.append(wk0)
+# Tính nghịch đảo giả của ma trận X_train mở rộng
+X_train_augmented_pseudo_inverse = np.linalg.pinv(X_train_augmented)
+W_ = X_train_augmented_pseudo_inverse.dot(T_train)
 
-    # Convert to numpy arrays for convenience
-    wk_array = np.array(wk_list)
-    wk0_array = np.array(wk0_list)
+# Hàm phân biệt
+def y(x):
+    x_augmented = np.hstack((1, x)).reshape(-1, 1)  # Thêm thành phần bias
+    return W_.T.dot(x_augmented)
 
-    # Calculate ak(x)
-    a = np.array([np.dot(X_fold_test, wk_array[k]) + wk0_array[k] for k in range(num_classes)])
+# Sử dụng bộ phân loại để phân loại các mẫu trong tập kiểm tra
+y_pred = []
+for sample in X_test_fisher:
+    result = y(sample)
+    y_pred.append(np.argmax(result))
 
-    # Softmax function
-    exp_a = np.exp(a - np.max(a, axis=0))
-    posterior = exp_a / np.sum(exp_a, axis=0)
-
-    # Predicted class
-    y_pred = np.argmax(posterior, axis=0)
-
-    # Calculate accuracy
-    accuracy = accuracy_score(y_fold_test, y_pred)
-    accuracies.append(accuracy)
-
-# Average accuracy
-avg_accuracy = np.mean(accuracies)
-print("Average Accuracy:", avg_accuracy)
+# Tính toán độ chính xác
+accuracy = np.sum(y_pred == y_test) / len(y_test)
+print("Độ chính xác trên tập kiểm tra:", accuracy)

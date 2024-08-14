@@ -14,6 +14,7 @@ def main():
 
     # Load data
     input_data.X, input_data.Y, input_data.numtypes = load_iris_data(PATH)
+    input_data.X = input_data.X / 10
 
     # Split data
     for X_train, Y_train, X_test, Y_test in kfold_split(input_data.X, input_data.Y, n_splits=NUM_SPLIT):
